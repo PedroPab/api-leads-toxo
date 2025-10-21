@@ -2,7 +2,22 @@ POST http://localhost:3010/api/v1/leads/draft
 Content-Type: application/json
 
 {
-  "id": "12345",
-  "name": "John Doe",
-  "email": "john.doe@example.com"
+  "name": "pedor pablo de prueab",
+  "phone": "+573054489895",
+  "email": "R8c8yeCGoC@test.com",
+  "country": "CO",
+  "state": "Atlántico",
+  "city": "Candelaria",
+  "address": "calle 101f , punto de reasrasr",
+  "sectionId": "section-iejvrgj5c",
+  "domain": "melon-sa.site",
+  "url": "https://melon-sa.site/Rtafull/rtafull-1760753949534826",
+  "products": [
+    {
+      "name": "RTAFULL pague 2 lleva 3",
+      "price": 159800,
+      "currency": "COP"
+    }
+  ],
+  "idStore": 7924
 }

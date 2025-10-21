@@ -1,6 +1,6 @@
 import { Router } from 'express'
-import Controller from './controller.js'
-import { enqueueDebounced, runWorker } from './redis.js';
+import { enqueueDebounced, runDebounceWorker } from './redis.js';
+import { upsertLeadDraft } from './supabase.js';
 // const controller = new Controller(client)
 
 const router = (server) => {
@@ -9,18 +9,23 @@ const router = (server) => {
 
     router.post('/leads/draft', async (req, res) => {
         const leadData = req.body
-        const id = leadData.id
+        const id = leadData.sectionId
 
-        // const dataRta = await controller.processLeadDraft(id, leadData)
         console.log('Procesando lead draft:', id, leadData);
-        await enqueueDebounced(id, leadData, 5 * 1000);
+        await enqueueDebounced(id, leadData, 2 * 1000);
         res.status(201).json({ message: 'Lead draft created' })
     })
 }
 
-runWorker(async ({ id, payload }) => {
+runDebounceWorker(async ({ id, payload }) => {
     console.log('> Ejecutando job:', id, payload);
-    // Tu lógica real aquí (guardar en DB, llamar API, enviar email, etc.)
+    const leadData = payload
+    try {
+        await upsertLeadDraft(leadData);
+    } catch (error) {
+        console.error('Error al upsertar lead draft:', error);
+    }
+
 });
 
 
