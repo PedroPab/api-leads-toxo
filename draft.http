@@ -1,1 +1,8 @@
 POST http://localhost:3010/api/v1/leads/draft
+Content-Type: application/json
+
+{
+  "id": "12345",
+  "name": "John Doe",
+  "email": "john.doe@example.com"
+}

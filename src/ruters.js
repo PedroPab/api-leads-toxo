@@ -1,8 +1,7 @@
 import { Router } from 'express'
 import Controller from './controller.js'
-import client from './redis.js'
-
-const controller = new Controller(client)
+import { enqueueDebounced, runWorker } from './redis.js';
+// const controller = new Controller(client)
 
 const router = (server) => {
     const router = Router()
@@ -12,9 +11,17 @@ const router = (server) => {
         const leadData = req.body
         const id = leadData.id
 
-        const dataRta = await controller.processLeadDraft(id, leadData)
-
-        res.status(201).json({ message: 'Lead draft created', data: dataRta })
+        // const dataRta = await controller.processLeadDraft(id, leadData)
+        console.log('Procesando lead draft:', id, leadData);
+        await enqueueDebounced(id, leadData, 5 * 1000);
+        res.status(201).json({ message: 'Lead draft created' })
     })
 }
+
+runWorker(async ({ id, payload }) => {
+    console.log('> Ejecutando job:', id, payload);
+    // Tu lógica real aquí (guardar en DB, llamar API, enviar email, etc.)
+});
+
+
 export default router
