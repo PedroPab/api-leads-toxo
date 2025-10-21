@@ -4,15 +4,8 @@ services:
     container_name: redis
     ports:
       - "6379:6379"
-    command: ["redis-server", "--save", "60", "1000", "--appendonly", "yes"]
+    command: ["redis-server","--appendonly","yes","--appendfsync","everysec"]
     volumes:
       - redis-data:/data
-#   app:
-#     build: .
-#     container_name: api-leads-toxo
-#     ports:
-#       - "3000:3000"
-#     depends_on:
-#       - redis
 volumes:
   redis-data:
