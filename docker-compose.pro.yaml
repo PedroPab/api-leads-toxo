@@ -1,0 +1,22 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server","--appendonly","yes","--appendfsync","everysec"]
+    volumes:
+      - redis-data:/data
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: api-leads-toxo
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    depends_on:
+      - redis
+volumes:
+  redis-data:

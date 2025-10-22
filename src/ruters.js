@@ -17,6 +17,7 @@ const router = (server) => {
     })
 }
 
+
 runDebounceWorker(async ({ id, payload }) => {
     console.log('> Ejecutando job:', id, payload);
     const leadData = payload
