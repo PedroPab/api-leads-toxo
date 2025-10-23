@@ -2,19 +2,48 @@ services:
   redis:
     image: redis:7-alpine
     container_name: redis
-    ports:
-      - "6379:6379"
-    command: ["redis-server","--appendonly","yes","--appendfsync","everysec"]
+    # 🔒 No expongas puertos al host
+    # ports: []  # (omitir 'ports' es suficiente)
+    command: [
+      "redis-server",
+      "--appendonly","yes",
+      "--appendfsync","everysec",
+      "--requirepass","${REDIS_PASSWORD}"   # protege tu Redis
+    ]
     volumes:
       - redis-data:/data
+    expose:
+      - "6379"        # visible SOLO para servicios en la misma red (no al host)
+    networks:
+      - backend       # red privada
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "PING"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   api:
     image: ghcr.io/pedropab/api-leads-toxo:latest
     container_name: api-leads-toxo
     ports:
-      - "3000:3000"
+      - "3010:3010"   # tu API sí se publica
     env_file:
       - .env
+    environment:
+      # Conecta usando el nombre del servicio 'redis' en la red interna
+      - REDIS_URL=redis://default:${REDIS_PASSWORD}@redis:6379/0
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+    networks:
+      - backend
+    restart: unless-stopped
+
+networks:
+  backend:
+    driver: bridge
+    # internal: true   # ❌ Comentado para permitir acceso externo a la API
+
 volumes:
   redis-data:
