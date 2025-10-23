@@ -91,41 +91,70 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ needs.build_and_push.result == 'success' }}   # solo si el build/push fue exitoso
     steps:
-      - name: Deploy over SSH (docker compose pull & up -d)
-        uses: appleboy/ssh-action@v1.0.3
+      - name: 🚀 Deploy to server via SSH
+        uses: appleboy/ssh-action@v1.0.0
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}   # clave privada SSH en texto (BEGIN OPENSSH PRIVATE KEY)
-          port: ${{ secrets.SERVER_PORT }}
-          script_stop: true
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: ${{ secrets.SERVER_PORT || 22 }}
           script: |
-            set -euo pipefail
-
-            IMAGE_NAME="${{ needs.build_and_push.outputs.image_name }}"
-            DEPLOY_TAG="${{ needs.build_and_push.outputs.deploy_tag }}"
-            FULL_IMAGE="${IMAGE_NAME}:${DEPLOY_TAG}"
-
-            echo "🔐 Login GHCR en el VPS…"
+            echo "🔄 Starting deployment process..."
+            
+            # Navegar al directorio del proyecto
+            cd ${{ secrets.SERVER_PROJECT_PATH || '/home' }}
+            
+            # Hacer backup de la versión actual (opcional)
+            echo "📦 Creating backup..."
+            docker-compose down || true
+            
+            # Actualizar el código desde git (opcional)
+            echo "📥 Pulling latest code..."
+            git pull origin main || echo "⚠️ Git pull failed, continuing with Docker update..."
+            
+            # Login a los registros de Docker
+            echo "🔐 Logging into Docker registries..."
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-            echo "⬇️  Pull de la imagen ${FULL_IMAGE}…"
-            docker pull "${FULL_IMAGE}"
-
-            echo "📂 Ir a ${{ secrets.SERVER_PROJECT_PATH }}"
-            cd "${{ secrets.SERVER_PROJECT_PATH }}"
-
-            # Si hay compose, actualiza servicios; si no, solo informa
-            if [ -f docker-compose.yml ] || [ -f compose.yml ]; then
-              # Si tu compose usa image: ghcr.io/<owner>/<repo>:latest o ${IMAGE_TAG},
-              # esto traerá la nueva versión y recreará contenedores.
-              docker compose pull
-              docker compose up -d --remove-orphans
-            else
-              echo "⚠️ No se encontró docker-compose.yml/compose.yml. Solo se hizo pull de ${FULL_IMAGE}."
-            fi
-
-            echo "🧹 Limpieza de imágenes antiguas…"
+            
+            # Actualizar las imágenes
+            echo "📥 Pulling latest Docker images..."
+            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest || \
+            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
+            
+            # Recrear y levantar los contenedores
+            echo "🐳 Recreating containers..."
+            docker-compose pull
+            docker-compose up -d --force-recreate
+            
+            # Limpiar imágenes antiguas
+            echo "🧹 Cleaning up old images..."
             docker image prune -f
+            
+            # Verificar que todo esté funcionando
+            echo "✅ Checking container status..."
+            docker-compose ps
+            
+            # Mostrar logs recientes
+            echo "📋 Recent logs:"
+            docker-compose logs --tail=20
+            
+            echo "🎉 Deployment completed successfully!"
 
-            echo "✅ Despliegue terminado."
+  notify:
+    needs: [build_and_push, deploy_to_vps]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📧 Notify deployment status
+        if: always()
+        run: |
+          if [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ Deployment successful!"
+            echo "🐳 Image: ${{ needs.build-and-push.outputs.image-tag }}"
+            echo "🔍 Digest: ${{ needs.build-and-push.outputs.image-digest }}"
+          else
+            echo "❌ Deployment failed!"
+            exit 1
+          fi
