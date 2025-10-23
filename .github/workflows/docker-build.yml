@@ -1,10 +1,10 @@
-name: Build & Push Docker image to GHCR
+name: Build → Push GHCR → Deploy to VPS
 
 on:
   push:
-    branches: [ "main" ]          # publica cuando haces push a main
-    tags: [ "v*.*.*" ]            # y cuando creas tags tipo v1.2.3
-  workflow_dispatch:              # permite ejecutarlo manualmente
+    branches: [ "main" ]          # despliega al hacer push a main
+    tags: [ "v*.*.*" ]            # y/o al crear un tag tipo v1.2.3
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,20 +14,21 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
-  build-and-push:
+  build_and_push:
     runs-on: ubuntu-latest
+    outputs:
+      image_name: ${{ steps.img.outputs.name }}
+      deploy_tag: ${{ steps.tag.outputs.value }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # (Opcional) Soporte multi-arquitectura
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # GHCR login usando GITHUB_TOKEN (no necesitas PAT)
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -35,38 +36,96 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Calcula la ruta de imagen en minúsculas: ghcr.io/<owner>/<repo>
+      # Calcula ghcr.io/<owner>/<repo> en minúsculas
       - name: Compute image name (lowercase)
         id: img
         run: |
           IMAGE="${{ env.REGISTRY }}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
           echo "name=$IMAGE" >> $GITHUB_OUTPUT
 
-      # Genera tags y labels OCI automáticamente
+      # Decide el tag a desplegar:
+      # - main  -> latest
+      # - tag   -> nombre del tag (vX.Y.Z)
+      # - otras -> sha-<commit corto>
+      - name: Compute deploy tag
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "branch" && "${{ github.ref_name }}" == "main" ]]; then
+            echo "value=latest" >> $GITHUB_OUTPUT
+          elif [[ "${{ github.ref_type }}" == "tag" ]]; then
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=sha-${GITHUB_SHA:0:12}" >> $GITHUB_OUTPUT
+          fi
+
+      # Metadatos/tags útiles
       - name: Docker metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.img.outputs.name }}
-          # Tags útiles:
           tags: |
-            type=ref,event=branch           # p.ej. main -> :main
-            type=ref,event=tag              # p.ej. v1.2.3 -> :v1.2.3
-            type=sha                        # :sha-<commit>
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}  # :latest en main
+            type=raw,value=${{ steps.tag.outputs.value }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
 
-      # Build + Push con caché
-      - name: Build and push
+      - name: Build & Push
         uses: docker/build-push-action@v5
         with:
           context: .
           file: ./Dockerfile
           push: true
-          # Descomenta para multi-arch si tu imagen lo soporta:
+          # Descomenta si necesitas multi-arch:
           # platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy_to_vps:
+    needs: build_and_push
+    runs-on: ubuntu-latest
+    if: ${{ needs.build_and_push.result == 'success' }}   # solo si el build/push fue exitoso
+    steps:
+      - name: Deploy over SSH (docker compose pull & up -d)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}   # clave privada SSH en texto (BEGIN OPENSSH PRIVATE KEY)
+          port: ${{ secrets.SERVER_PORT }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            IMAGE_NAME="${{ needs.build_and_push.outputs.image_name }}"
+            DEPLOY_TAG="${{ needs.build_and_push.outputs.deploy_tag }}"
+            FULL_IMAGE="${IMAGE_NAME}:${DEPLOY_TAG}"
+
+            echo "🔐 Login GHCR en el VPS…"
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+            echo "⬇️  Pull de la imagen ${FULL_IMAGE}…"
+            docker pull "${FULL_IMAGE}"
+
+            echo "📂 Ir a ${{ secrets.SERVER_PROJECT_PATH }}"
+            cd "${{ secrets.SERVER_PROJECT_PATH }}"
+
+            # Si hay compose, actualiza servicios; si no, solo informa
+            if [ -f docker-compose.yml ] || [ -f compose.yml ]; then
+              # Si tu compose usa image: ghcr.io/<owner>/<repo>:latest o ${IMAGE_TAG},
+              # esto traerá la nueva versión y recreará contenedores.
+              docker compose pull
+              docker compose up -d --remove-orphans
+            else
+              echo "⚠️ No se encontró docker-compose.yml/compose.yml. Solo se hizo pull de ${FULL_IMAGE}."
+            fi
+
+            echo "🧹 Limpieza de imágenes antiguas…"
+            docker image prune -f
+
+            echo "✅ Despliegue terminado."
