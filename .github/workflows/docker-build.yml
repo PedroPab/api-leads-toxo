@@ -1,151 +1,72 @@
-name: Build, Push and Deploy to Server
+name: Build & Push Docker image to GHCR
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:  # Permite ejecutar manualmente
+    branches: [ "main" ]          # publica cuando haces push a main
+    tags: [ "v*.*.*" ]            # y cuando creas tags tipo v1.2.3
+  workflow_dispatch:              # permite ejecutarlo manualmente
+
+permissions:
+  contents: read
+  packages: write                 # necesario para subir a GHCR
 
 env:
-  IMAGE_NAME: arceliuz
-  REGISTRY_GHCR: ghcr.io
-  REGISTRY_DOCKERHUB: docker.io
+  REGISTRY: ghcr.io
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    
-    permissions:
-      contents: read
-      packages: write
-      
-    outputs:
-      image-digest: ${{ steps.build.outputs.digest }}
-      image-tag: ${{ steps.meta.outputs.tags }}
-
     steps:
-      - name: 🔄 Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: 🐳 Set up Docker Buildx
+      # (Opcional) Soporte multi-arquitectura
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            network=host
 
-      - name: 📝 Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY_GHCR }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
-            ${{ env.REGISTRY_DOCKERHUB }}/${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=pr
-            type=sha,prefix={{branch}}-
-            type=raw,value=latest,enable={{is_default_branch}}
-
-      - name: 🔐 Login to GitHub Container Registry
+      # GHCR login usando GITHUB_TOKEN (no necesitas PAT)
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY_GHCR }}
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 🔐 Login to Docker Hub
-        if: github.event_name != 'pull_request'
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY_DOCKERHUB }}
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # Calcula la ruta de imagen en minúsculas: ghcr.io/<owner>/<repo>
+      - name: Compute image name (lowercase)
+        id: img
+        run: |
+          IMAGE="${{ env.REGISTRY }}/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=$IMAGE" >> $GITHUB_OUTPUT
 
-      - name: 🏗️ Build and push Docker image
-        id: build
+      # Genera tags y labels OCI automáticamente
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.img.outputs.name }}
+          # Tags útiles:
+          tags: |
+            type=ref,event=branch           # p.ej. main -> :main
+            type=ref,event=tag              # p.ej. v1.2.3 -> :v1.2.3
+            type=sha                        # :sha-<commit>
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}  # :latest en main
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+
+      # Build + Push con caché
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
+          file: ./Dockerfile
+          push: true
+          # Descomenta para multi-arch si tu imagen lo soporta:
+          # platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          build-args: |
-            BUILDTIME=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
-            VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
-    steps:
-      - name: 🚀 Deploy to server via SSH
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          port: ${{ secrets.SERVER_PORT || 22 }}
-          script: |
-            echo "🔄 Starting deployment process..."
-            
-            # Navegar al directorio del proyecto
-            cd ${{ secrets.SERVER_PROJECT_PATH || '/home/ubuntu/arceliuz' }}
-            
-            # Hacer backup de la versión actual (opcional)
-            echo "📦 Creating backup..."
-            docker-compose down || true
-            
-            # Actualizar el código desde git (opcional)
-            echo "📥 Pulling latest code..."
-            git pull origin main || echo "⚠️ Git pull failed, continuing with Docker update..."
-            
-            # Login a los registros de Docker
-            echo "🔐 Logging into Docker registries..."
-            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-            
-            # Actualizar las imágenes
-            echo "📥 Pulling latest Docker images..."
-            docker pull ghcr.io/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}:latest || \
-            docker pull ${{ secrets.DOCKERHUB_USERNAME }}/${{ env.IMAGE_NAME }}:latest
-            
-            # Recrear y levantar los contenedores
-            echo "🐳 Recreating containers..."
-            docker-compose pull
-            docker-compose up -d --force-recreate
-            
-            # Limpiar imágenes antiguas
-            echo "🧹 Cleaning up old images..."
-            docker image prune -f
-            
-            # Verificar que todo esté funcionando
-            echo "✅ Checking container status..."
-            docker-compose ps
-            
-            # Mostrar logs recientes
-            echo "📋 Recent logs:"
-            docker-compose logs --tail=20
-            
-            echo "🎉 Deployment completed successfully!"
-
-  notify:
-    needs: [build-and-push, deploy]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: 📧 Notify deployment status
-        if: always()
-        run: |
-          if [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "✅ Deployment successful!"
-            echo "🐳 Image: ${{ needs.build-and-push.outputs.image-tag }}"
-            echo "🔍 Digest: ${{ needs.build-and-push.outputs.image-digest }}"
-          else
-            echo "❌ Deployment failed!"
-            exit 1
-          fi
