@@ -10,7 +10,7 @@ COPY package*.json ./
 RUN npm ci --only=production && npm cache clean --force
 
 # Etapa 2: Production
-FROM node:18-alpine AS production
+FROM node:20-alpine AS production
 
 WORKDIR /app
 
