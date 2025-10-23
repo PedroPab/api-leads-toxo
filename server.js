@@ -1,4 +1,3 @@
-process.loadEnvFile();
 import express, { json, urlencoded } from 'express';
 import router from './src/ruters.js';
 
